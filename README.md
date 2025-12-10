@@ -175,7 +175,9 @@ bash data/amazon18_data_process.sh \
      --ed_month 11 \
      --output_path ./data/Amazon18
 ```
-- **2.3 Encode item text to embeddings**
+- **2.3 Encode item text to embeddings(通过预训练LLMQwen把item text先编码为emb，用于后续RQ-VAE的输入)**
+  
+  相应代码在./rq/text2emb下，把item title+description拼起来，输入qwen进行emb。得到的每个item对应的emb保存在./data/Amazon/index下的.npy文件
 ```
 bash rq/amazon_text2emb.sh \
      --dataset your_dataset_type \ # e.g., Industrial 
@@ -188,7 +190,13 @@ bash rq/amazon_text2emb.sh \
 
 Choose either 3.1.1, 3.1.2, 3.1.3 or 3.1.4.
 
+把item emb离散化为3个SID（3个码本），每个码本大小为256
+
+简单的VAE只能出一个SID，而RQ-VAE能出多个，因此范围更大更精准？
+
 - **3.1.1 Train RQ-VAE on the embeddings**
+
+     具体的RQ-VAE模型代码在./rq/models/目录下
 ```
 bash rq/rqvae.sh \
       --data_path xxx/data/Industrial_and_Scientific/Industrial_and_Scientific.emb-qwen-td.npy \
@@ -222,6 +230,8 @@ bash rqkmeans_plus.sh
 ```
 
 - **3.2 Generate indices(only RQ-VAE & RQ-Kmeans+ needed)**
+  
+  基于训好的RQ-VAE进行预测得到item的SID（LLM编码的item emb作为输入），最后的SID存储在./data/Amazon/index目录的.index.json文件下
 ```
 python rq/generate_indices.py
 # or
@@ -239,6 +249,7 @@ python convert_dataset.py \
 
 ### 4. SFT
 
+具体的SFT代码在./sft.py
 ```
 bash sft.sh \
      --base_model your_model_path \
@@ -247,7 +258,15 @@ bash sft.sh \
      --item_meta_path your_.item.json_path
 ```
 
-### 5. Recommendation-Oriented RL
+### 5. Recommendation-Oriented RL(./rl.py)
+
+GRPO，reward有2个：
+
+1. ACC Reward:生成的3个SID对应的item是ground truth
+2. Rank Reward:模型生成num_generations个item，把模型对这些item的SID的softmax的概率得分相加后排序，这个分越高说明模型对这个item排序越前越自信，对于rank靠前的正/负样本给予更大的奖励/惩罚
+
+有Rank Reward的原因一是惩罚难负样本，二是ACC Reward的奖励太稀疏了
+
 > (Optional) For production-scale datasets, considering the cost of reinforcement learning and diminishing marginal returns, you can perform the RL stage using only a relatively small subset on the order of tens of thousands of samples.
 ```
 bash rl.sh \

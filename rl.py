@@ -153,6 +153,7 @@ def train(
 
     print("Load item_ada_embd successfully.")
 
+    # rank reward
     ndcg_rewards = [-1.0/math.log2(i+2) for i in range(num_generations)]
     ndcg_rewards = [-elm/sum(ndcg_rewards) for elm in ndcg_rewards]
 
