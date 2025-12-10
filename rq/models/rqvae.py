@@ -44,9 +44,12 @@ class RQVAE(nn.Module):
         self.sk_iters = sk_iters
 
         self.encode_layer_dims = [self.in_dim] + self.layers + [self.e_dim]
+
+        # Encoder:多层MLP
         self.encoder = MLPLayers(layers=self.encode_layer_dims,
                                  dropout=self.dropout_prob,bn=self.bn)
 
+        # RQ-VAE
         self.rq = ResidualVectorQuantizer(num_emb_list, e_dim,
                                           beta=self.beta,
                                           kmeans_init = self.kmeans_init,
@@ -55,12 +58,20 @@ class RQVAE(nn.Module):
                                           sk_iters=self.sk_iters,)
 
         self.decode_layer_dims = self.encode_layer_dims[::-1]
+
+        # Decoder:多层MLP
         self.decoder = MLPLayers(layers=self.decode_layer_dims,
                                        dropout=self.dropout_prob,bn=self.bn)
 
     def forward(self, x, use_sk=True):
         x = self.encoder(x)
+
+        # x_q是量化后的向量
+        # rq_loss是量化损失
+        # indices是量化索引，即最终的三个SID
         x_q, rq_loss, indices = self.rq(x,use_sk=use_sk)
+
+        # encoder的输入是x_q，通过x_q重建x
         out = self.decoder(x_q)
 
         return out, rq_loss, indices
@@ -72,7 +83,8 @@ class RQVAE(nn.Module):
         return indices
 
     def compute_loss(self, out, quant_loss, xs=None):
-
+        
+        # VAE的重构损失
         if self.loss_type == 'mse':
             loss_recon = F.mse_loss(out, xs, reduction='mean')
         elif self.loss_type == 'l1':

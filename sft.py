@@ -146,19 +146,21 @@ def train(
     tokenizer.pad_token_id = tokenizer.eos_token_id
     tokenizer.padding_side = "left"
     
+    # 
     if sid_index_path and os.path.exists(sid_index_path):
         print(f"Loading index from {sid_index_path}")
-        token_extender = TokenExtender(
+        token_extender = TokenExtender( # 读取.index.json文件，即记录每个item的sid token的文件，把涉及到的SID token记录下来
             data_path=os.path.dirname(sid_index_path),
             dataset=os.path.basename(sid_index_path).split('.')[0]
         )
         new_tokens = token_extender.get_new_tokens()
         if new_tokens:
             print(f"Adding {len(new_tokens)} new tokens to tokenizer")
-            tokenizer.add_tokens(new_tokens)
-            model.resize_token_embeddings(len(tokenizer))
+            tokenizer.add_tokens(new_tokens) # 调用tokenizer的add_tokens方法添加新的token到词表里,因为LLM原有的分词器里面没有这些SID token
+            model.resize_token_embeddings(len(tokenizer)) # resize_token_embeddings，调整词表的嵌入矩阵的大小，以适应新的词表大小
 
     # Freeze LLM parameters if required
+    # 只训练新增的SID token 的embedding，其它参数全部冻结
     if freeze_LLM:
         print("Freezing LLM parameters, only training new token embeddings")
         for param in model.parameters():
@@ -169,6 +171,7 @@ def train(
             if embedding_layer.weight.shape[0] > original_vocab_size:
                 embedding_layer.weight.requires_grad = True
 
+                # 在回传梯度的时候，把原有的词表的embedding的梯度置为0，这样梯度值只留下新增的token的embedding的梯度
                 def mask_grad(grad):
                     # grad shape: [vocab_size, hidden_dim]
                     grad[:original_vocab_size].zero_()
@@ -183,12 +186,20 @@ def train(
             print("Warning: freeze_LLM=True but no new tokens added. All parameters are frozen!")
 
         # Print the number of trainable parameters (it will still report the size of the entire embedding matrix, but only the newly added rows will have non-zero gradients).
+        # 输出所有参数和非冻结参数的数量
         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         total_params     = sum(p.numel() for p in model.parameters())
         print(f"Trainable parameters (with grad-mask): {trainable_params:,} / "
             f"{total_params:,} ({100*trainable_params/total_params:.2f}%)")
         
     train_datasets = []
+    '''
+    这些SFT训练集的区别就是prompt不同,
+    比如SidSFTDataset是给出SID序列,预测下一个SID
+    TitleHistory2SidSFTDataset是给出item的title序列,预测下一个SID
+    具体细节进去看
+    然后这些各类型的SFT任务最终会被concat成一个大的训练集train_data
+    '''
     # train_data1 = SFTData(train_file=train_file, tokenizer=tokenizer, max_len=cutoff_len,  sample=sample, seed=seed, category=category)
     train_data1 = SidSFTDataset(train_file=train_file, tokenizer=tokenizer, max_len=cutoff_len,  sample=sample, seed=seed, category=category)
     train_datasets.append(train_data1)
@@ -201,6 +212,10 @@ def train(
     # train_data5 = TitleHistory2SidSFTDataset(train_file=train_file, item_file=item_meta_path, index_file=sid_index_path, tokenizer=tokenizer, max_len=cutoff_len, sample=sample, seed=seed, category=category)
     # train_datasets.append(train_data5)
     train_data = ConcatDataset(train_datasets)
+
+    '''
+    验证集只有基于SID序列预测下一个SID的任务
+    '''
     val_data = SidSFTDataset(train_file=eval_file, tokenizer=tokenizer, max_len=cutoff_len,  sample=sample, seed=seed, category=category)
     # val_data = SFTData(train_file=eval_file, tokenizer=tokenizer, max_len=cutoff_len,  sample=20000, seed=seed, category=category)
     print("LOAD DATA FINISHED")    

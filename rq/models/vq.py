@@ -18,6 +18,7 @@ class VectorQuantizer(nn.Module):
         self.sk_epsilon = sk_epsilon
         self.sk_iters = sk_iters
 
+        # 码本向量，每个码本向量的维度为e_dim，总共有n_e个码本向量
         self.embedding = nn.Embedding(self.n_e, self.e_dim)
         if not kmeans_init:
             self.initted = True
@@ -64,16 +65,18 @@ class VectorQuantizer(nn.Module):
         # Flatten input
         latent = x.view(-1, self.e_dim)
 
+        # TODO: kmeans init
         if not self.initted and self.training:
             self.init_emb(latent)
 
         # Calculate the L2 Norm between latent and Embedded weights
+        # 计算input x 与码本向量的L2距离
         d = torch.sum(latent**2, dim=1, keepdim=True) + \
             torch.sum(self.embedding.weight**2, dim=1, keepdim=True).t()- \
             2 * torch.matmul(latent, self.embedding.weight.t())
         if not use_sk or self.sk_epsilon <= 0:
-            indices = torch.argmin(d, dim=-1)
-        else:
+            indices = torch.argmin(d, dim=-1) # 选择距离最近的码本向量的索引
+        else: # TODO:使用Sinkhorn算法来解决冲突item SID相同的问题,会减少这批batch内item的冲突概率
             d = self.center_distance_for_constraint(d)
             d = d.double()
             Q = sinkhorn_algorithm(d, self.sk_epsilon, self.sk_iters)
@@ -82,15 +85,18 @@ class VectorQuantizer(nn.Module):
                 print(f"Sinkhorn Algorithm returns nan/inf values.")
             indices = torch.argmax(Q, dim=-1)
 
-        # indices = torch.argmin(d, dim=-1)
+        # indices = torch.argmin(d, dim=-1) 
 
-        x_q = self.embedding(indices).view(x.shape)
+        x_q = self.embedding(indices).view(x.shape) # 最近的码本向量作为量化后的向量
 
         # compute loss for embedding
-        commitment_loss = F.mse_loss(x_q.detach(), x)
+
+        # TODO:为什么要分开计算两个loss？
+        commitment_loss = F.mse_loss(x_q.detach(), x) # 求输入x与量化后向量x_q的误差/距离
         codebook_loss = F.mse_loss(x_q, x.detach())
         loss = codebook_loss + self.beta * commitment_loss
 
+        # TODO: why we use this trick
         # preserve gradients
         x_q = x + (x_q - x).detach()
 

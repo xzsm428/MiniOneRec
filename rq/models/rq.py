@@ -21,6 +21,7 @@ class ResidualVectorQuantizer(nn.Module):
         self.kmeans_iters = kmeans_iters
         self.sk_epsilons = sk_epsilons
         self.sk_iters = sk_iters
+        # 多层VQ量化
         self.vq_layers = nn.ModuleList([VectorQuantizer(n_e, e_dim,
                                                         beta=self.beta,
                                                         kmeans_init = self.kmeans_init,
@@ -41,11 +42,16 @@ class ResidualVectorQuantizer(nn.Module):
         all_indices = []
 
         x_q = 0
-        residual = x
+        residual = x # 将输入x作为残差初始值
+
+        # 逐层量化
         for quantizer in self.vq_layers:
+            # 每层转入residual,输出的x_res为与residual最近的码本向量
+            # loss为输入的residual与x_res的误差/距离，即量化损失
+            # indices为量化索引，即x_res在码本中的位置
             x_res, loss, indices = quantizer(residual, use_sk=use_sk)
-            residual = residual - x_res
-            x_q = x_q + x_res
+            residual = residual - x_res # 更新残差
+            x_q = x_q + x_res # 累计量化后的向量
 
             all_losses.append(loss)
             all_indices.append(indices)

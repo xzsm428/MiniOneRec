@@ -52,9 +52,10 @@ ckpt = torch.load(ckpt_path, map_location=torch.device('cpu'))
 args = ckpt["args"]
 state_dict = ckpt["state_dict"]
 
-
+# 加载之前Qwen编码的item emb
 data = EmbDataset(args.data_path)
 
+# 加载训好的RQVAE模型
 model = RQVAE(in_dim=data.dim,
                   num_emb_list=args.num_emb_list,
                   e_dim=args.e_dim,
@@ -84,8 +85,11 @@ prefix = ["<a_{}>","<b_{}>","<c_{}>","<d_{}>","<e_{}>"]
 
 for d in tqdm(data_loader):
     d = d.to(device)
+    # 输入item emb,获取SID
     indices = model.get_indices(d,use_sk=False)
     indices = indices.view(-1, indices.shape[-1]).cpu().numpy()
+
+    # 转换成指定格式,假如item 1 的 indices=[12,34,56] -> ["<a_12>","<b_34>","<c_56>"]
     for index in indices:
         code = []
         for i, ind in enumerate(index):
@@ -106,7 +110,12 @@ if model.rq.vq_layers[-1].sk_epsilon == 0.0:
 
 tt = 0
 #There are often duplicate items in the dataset, and we no longer differentiate them
+'''
+对于SID冲突的item,使用Sinkhorn算法重新计算索引,直到没有冲突或者达到最大迭代次数20次为止(到20次还有冲突就放弃了,毕竟这样的话这些冲突item估计也没啥区别)
+思路:遍历所有冲突的item,重新计算索引,更新all_indices和all_indices_str
+'''
 while True:
+    # 迭代次数>=20 or 没有冲突
     if tt >= 20 or check_collision(all_indices_str):
         break
 
@@ -114,8 +123,10 @@ while True:
     print(collision_item_groups)
     print(len(collision_item_groups))
     for collision_items in collision_item_groups:
+        # 重新拿出这些冲突的item的emb
         d = data[collision_items].to(device)
 
+        # 重新用RQVAE计算索引,这次使用Sinkhorn算法,会减少这批batch内item的冲突概率
         indices = model.get_indices(d, use_sk=True)
         indices = indices.view(-1, indices.shape[-1]).cpu().numpy()
         for item, index in zip(collision_items, indices):
