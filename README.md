@@ -267,12 +267,12 @@ bash sft.sh \
 
 ### 5. Recommendation-Oriented RL(./rl.py)
 
-GRPO，reward有2个：
+GRPO，reward有2个（拓展的还有2个）：
 
-1. ACC Reward:生成的3个SID对应的item是ground truth
-2. Rank Reward:模型生成num_generations个item，把模型对这些item的SID的softmax的概率得分相加后排序，这个分越高说明模型对这个item排序越前越自信，对于rank靠前的正/负样本给予更大的奖励/惩罚
+1. ACC Reward:模型生成num_generations个item（由于温度控制和随机采样的原因，相同的input可能产生不同的output，生成num_generations次）中有ground truth（答对给1分，答错给0分）
+2. Rank Reward:模型生成num_generations个item，把模型对这些item的SID的softmax的概率得分相加后排序（TODO: 最终的推荐列表的排序结果是不是这样生成的?），这个分越高说明模型对这个item排序越前越自信，对于rank靠前的负样本给予更大的惩罚（这个惩罚分由NDCG计算），如果答对就不给惩罚分
 
-有Rank Reward的原因一是惩罚难负样本，二是ACC Reward的奖励太稀疏了
+有Rank Reward的原因一是惩罚难负样本，二是ACC Reward的奖励太稀疏了（模型大部分的输出可能都不是ground truth，因此大部分情况都不会得分，但答错也分错的离谱和不离谱，如果把模型虽然答错但排序比较靠后与答错但排序特别靠前的都给相同reward的话就不太合适）
 
 > (Optional) For production-scale datasets, considering the cost of reinforcement learning and diminishing marginal returns, you can perform the RL stage using only a relatively small subset on the order of tens of thousands of samples.
 ```

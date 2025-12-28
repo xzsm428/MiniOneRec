@@ -476,6 +476,7 @@ class ReReTrainer(Trainer):
             # synchronize all processes after vLLM has been fully initialized.
             self.accelerator.wait_for_everyone()
         else:
+            # NOTE: 第一个修改点：num_beams设置为num_generations
             if self.beam_search:
                  #* temperature 默认为 1.0
                 print(f"self.temperature: {self.temperature}")
@@ -525,8 +526,8 @@ class ReReTrainer(Trainer):
             if isinstance(reward_func, PreTrainedModel):
                 self.reward_funcs[i] = self.accelerator.prepare_model(reward_func, evaluation_mode=True)
 
-        
-        with open(self.info_file, 'r') as f:
+        # NOTE: 第二个修改点：前缀树约束解码
+        with open(self.info_file, 'r') as f: # 打开item的SID清单文件
             info = f.readlines()
             # Parse new format: semantic_id \t item_title \t item_id
             semantic_ids = [line.split('\t')[0].strip() + "\n" for line in info]
@@ -535,7 +536,8 @@ class ReReTrainer(Trainer):
             # Format for tokenization
             info_semantic = [f'''### Response:\n{_}''' for _ in semantic_ids]
             info_titles = [f'''### Response:\n{_}''' for _ in item_titles]
-
+            
+            # 读取所有合法item的SID，拼成'### Response:\n{SID}'的样子
             info = info_semantic
 
         # with open(self.info_file, 'r') as f:
@@ -547,7 +549,7 @@ class ReReTrainer(Trainer):
         if self.base_model.lower().find("llama") > -1: 
             prefixID = [tokenizer(_).input_ids[1:] for _ in info]
         else:
-            prefixID = [tokenizer(_).input_ids for _ in info]
+            prefixID = [tokenizer(_).input_ids for _ in info] # 把所有的 ### Response:\n{SID} token化，TODO: 这里是把'### Response:\n'也token化了吗？
         
         if self.base_model.lower().find("gpt2") > -1:
             prefix_index = 4
@@ -556,10 +558,13 @@ class ReReTrainer(Trainer):
             
         self.hash_dict = dict()
         # sasrec_dict = dict()
-        for index, ID in enumerate(prefixID):
-            ID.append(tokenizer.eos_token_id)
+        for index, ID in enumerate(prefixID): # 循环token化后的prefixID
+            ID.append(tokenizer.eos_token_id) # 在每个prefixID的末尾添加eos_token
             for i in range(prefix_index, len(ID)):
                 if i == prefix_index:
+                    '''
+                    把ID[i]的前缀（即ID[:i])的hash值计算出来,然后放到字典hash_dict中，构成key=ID[:i],Value= [ID[i]] 的K-V对，通过这种方式构造response前缀token+下一个token的关联关系
+                    '''
                     hash_number = self.get_hash(ID[:i])
                 else:
                     hash_number = self.get_hash(ID[prefix_index:i])
@@ -567,9 +572,10 @@ class ReReTrainer(Trainer):
                     self.hash_dict[hash_number] = set()
                     # sasrec_dict[hash_number] = set()
                 self.hash_dict[hash_number].add(ID[i])
-
+        
+        # 整体叫做前缀树
         for key in self.hash_dict.keys():
-            self.hash_dict[key] = list(self.hash_dict[key])
+            self.hash_dict[key] = list(self.hash_dict[key]) # 最终就是prefix -> [可选token1,可选token2,...]这样的K-V对关系
 
         self.test_generation_config = GenerationConfig(max_new_tokens=self.max_completion_length,
                                                             length_penalty=self.length_penalty,
@@ -684,10 +690,14 @@ class ReReTrainer(Trainer):
             prompt_ids = prompt_ids[:, -self.max_prompt_length :]
             prompt_mask = prompt_mask[:, -self.max_prompt_length :]
 
-        ccc = ConstrainedLogitsProcessor(
+        # NOTE: 第三个修改点：通过约束大模型生成token的概率分布来达到约束解码的目的
+        '''
+        假设词表中有6万个token，那么大模型最终softmax会给6万个token一个概率值来决定下一个token的预测，那么把那些合法的token的概率值留下，不合法的token的概率值设为无限小后再做softmax，那么大模型最终生成的token大概率就是合法的token
+        '''
+        ccc = ConstrainedLogitsProcessor( #这个Processer是每次GRPO做next token prediction时都会回调的processor，点进去能看到概率控制的具体实现
                 # guidance_scale=1.0,
                 # cf_logits=None,
-                prefix_allowed_tokens_fn=self.prefix_allowed_tokens_fn,
+                prefix_allowed_tokens_fn=self.prefix_allowed_tokens_fn, # 一个钩子函数，用于查之前构造的hash dict来得到本次next token prediction的合法token集合
                 # cf_dict=sasrec_dict,
                 # unconditional_ids=None,
                 num_beams=self.num_generations if self.beam_search else 1,

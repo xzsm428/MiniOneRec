@@ -133,6 +133,7 @@ def train(
     print("train_dataset: ", train_dataset)
     print("eval_dataset: ", eval_dataset)
 
+    # 加载前面SFT好的模型
     llm_model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.bfloat16, device_map="auto")
     device = llm_model.device
     tokenizer = AutoTokenizer.from_pretrained(model_path)
@@ -141,6 +142,7 @@ def train(
     item_num = len(item_name)
     print(f"item_num: {item_num}")
 
+    # TODO: 两个拓展reward，还没看
     if reward_type == "sasrec":
         model = SASRec(32, item_num, len_seq, 0.3, device)
         model.to(device)
@@ -153,48 +155,58 @@ def train(
 
     print("Load item_ada_embd successfully.")
 
-    # rank reward
+    # rank reward的惩罚分(基于NDCG计算），num_generations就是回答数量
     ndcg_rewards = [-1.0/math.log2(i+2) for i in range(num_generations)]
     ndcg_rewards = [-elm/sum(ndcg_rewards) for elm in ndcg_rewards]
 
-
+    # rank reward
+    # 同一个input的num_generations个output是按照概率得分从高到低排序在completions中的，这个是由GRPO的beam search采样保证的
     def ndcg_rule_reward(prompts, completions):
         history = [prompt2history[prompt] for prompt in prompts]
-        targets = [history2target[elm] for elm in history]
+        targets = [history2target[elm] for elm in history] # targets是ground truth
         repeat = num_generations
         rewards = []
         flag = False
         lis = []
 
-        for i, completion in enumerate(completions):
+        for i, completion in enumerate(completions): # completions是模型预测的结果
 
+            # 如果模型预测到ground truth，那么rank reward给0分，否则给负分
             if completion.strip("\n\"") == targets[i].strip("\n\""):
-                flag = True
+                flag = True # flag用于记录模型预测的num_generations个结果中是否有ground truth
                 lis.append(0.0)
             else:
                 lis.append(ndcg_rewards[i%num_generations])
             
-            if (i+1)%num_generations == 0:
-                if flag:
+            if (i+1)%num_generations == 0: # 每num_generations个结果计算一次reward
+                '''
+                这里有点不太好理解,我的理解是reward这个东西是组内相对的,要的是一个组内的区分度
+                因此组内如果有答对的，那么就要给答错的负分来做出区分
+                如果全部答错，那么组内就没有区分度，因此全给0分
+                先暂时这样理解吧
+                '''
+                if flag: # 如果有答对的就答对给0分答错给负分
                     rewards.extend(lis)
-                else:
+                else: # 如果都没答对就全给0分
                     rewards.extend([0.0] * repeat)
                 flag = False
                 lis = []
         
         return rewards
 
+    # acc reward
     def rule_reward(prompts, completions):
         history = [prompt2history[prompt] for prompt in prompts]
-        targets = [history2target[elm] for elm in history]
+        targets = [history2target[elm] for elm in history] # targets是ground truth
         rewards = []
 
-        for i, completion in enumerate(completions):
+        # 只要模型预测的num_generations个结果中有ground truth，就给1分
+        for i, completion in enumerate(completions): # completions是模型预测的num_generations个结果
 
-            if completion.strip("\n\" ") == targets[i].strip("\n\" "):
-                rewards.append(1.0)
+            if completion.strip("\n\" ") == targets[i].strip("\n\" "): # ACC Reward
+                rewards.append(1.0) # 答对给1分
             else:
-                rewards.append(0.0)
+                rewards.append(0.0) # 答错给0分
         return rewards
 
     def semantic_reward(prompts, completions):
@@ -261,6 +273,8 @@ def train(
     os.environ['WANDB_PROJECT'] = wandb_project
     os.environ["WANDB_MODE"] = "offline"
 
+
+    # GRPO训练配置
     training_args = GRPOConfig(output_dir=output_dir,
                                 save_steps=0.1,
                                 save_total_limit=20,
@@ -286,6 +300,9 @@ def train(
                                 report_to="wandb",
                                 run_name=wandb_run_name,
                             )
+    '''
+    这里用的不是官方的GRPOTrainer，是把原始的GRPOTrainer复制出来改了一下，点进去看我标NOTE的地方重点看即可
+    '''
     trainer = ReReTrainer(
         model=model_path,
         base_model=model_path,
@@ -293,7 +310,7 @@ def train(
         gspo=gspo,
         add_gt=add_gt,
         dynamic_sampling=dynamic_sampling,
-        beam_search=beam_search,
+        beam_search=beam_search, # beam search保留当前总概率值最大的Top-k个输出
         test_during_training=test_during_training,
         test_beam=test_beam,
         info_file=info_file,
